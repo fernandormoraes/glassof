@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ var tableCmd = &cobra.Command{
 
 	Take a ./glassof table add table_name     -- for adding tables
 	Take a ./glassof table list               -- for listing tables added
+	Take a ./glassof table rm table_name      -- for removing tables
 	
 	It is necessary to take a ./glassof primary   who will be responsible for identifying which row changed
 	It is necessary to take a ./glassof query     who will be responsible for get data in a certain way and replicate`,
@@ -26,13 +28,52 @@ var tableCmd = &cobra.Command{
 		if args[0] == "add" {
 			addTable(args)
 		} else if args[0] == "list" {
-			listTables(args)
+			listTables()
+		} else if args[0] == "rm" {
+			removeTable(args)
 		}
 
 	},
 }
 
-func listTables(args []string) {
+func removeTable(args []string) {
+	fmt.Println("Tables before delete: ")
+	tablesList := listTables()
+
+	if strings.Contains(tablesList, args[1]) {
+		after := strings.Replace(tablesList, args[1]+";", "", -1)
+
+		db, err := pebble.Open("db", &pebble.Options{})
+
+		if err != nil {
+			log.Println("Error opening database")
+			log.Fatal(err)
+		}
+
+		if after != "" && after[len(after)-1] != ';' {
+			after = after + ";"
+		}
+
+		if errorInsert := db.Set([]byte("tables"), []byte(after), pebble.Sync); errorInsert != nil {
+			log.Println("Error inserting in tables.")
+			log.Fatal(errorInsert)
+		}
+
+		if errorDelete := db.Delete([]byte(fmt.Sprintf("table.%s", args[1])), pebble.Sync); errorDelete != nil {
+			log.Println("Error deleting tables.")
+			log.Fatal(errorDelete)
+		}
+
+		fmt.Println("Tables after delete: ")
+
+		fmt.Println(after)
+
+	} else {
+		fmt.Println("Table was not found in Glassof.")
+	}
+}
+
+func listTables() string {
 	db, err := pebble.Open("db", &pebble.Options{})
 
 	if err != nil {
@@ -53,6 +94,8 @@ func listTables(args []string) {
 
 	fmt.Println("List of tables: ")
 	fmt.Println(string(res[:]))
+
+	return string(res[:])
 }
 
 func addTable(args []string) {
