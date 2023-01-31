@@ -14,8 +14,11 @@ import (
 // tableCmd represents the table command
 var tableCmd = &cobra.Command{
 	Use:   "table",
-	Short: "Add a table to replication service",
+	Short: "Command to list and add tables",
 	Long: `Adding a table to replication service only means that service will listen to changes in these tables.
+
+	Take a ./glassof table add table_name     -- for adding tables
+	Take a ./glassof table list               -- for listing tables added
 	
 	It is necessary to take a ./glassof primary   who will be responsible for identifying which row changed
 	It is necessary to take a ./glassof query     who will be responsible for get data in a certain way and replicate`,
