@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/jackc/pgx"
 	"github.com/spf13/cobra"
 )
@@ -55,19 +56,45 @@ var initCmd = &cobra.Command{
 
 		var dest interface{}
 
-		errSlot := conn.QueryRow("SELECT * FROM pg_create_logical_replication_slot('glassof', 'wal2json', false);").Scan(dest)
+		_, err = conn.Exec("ALTER SYSTEM SET wal_level = logical;")
+
+		if err != nil {
+			panic(err)
+		}
+
+		_, err = conn.Exec("SELECT pg_reload_conf();")
+
+		if err != nil {
+			panic(err)
+		}
+
+		errSlot := conn.QueryRow("SELECT * FROM pg_create_logical_replication_slot('glassof', 'pgoutput', false);").Scan(dest)
 
 		if errSlot != nil {
-			fmt.Printf("Error creating logical replication\n")
-			fmt.Printf("Maybe you forget to turn wal_level = logical in postgres.conf\n")
-			fmt.Printf("Or maybe you forget to install wal2json plugin in postgresql instance?\n")
-
 			if strings.Contains(errSlot.Error(), "already exists") {
 				fmt.Printf("glassof replication slot already exists, proceeding...\n")
 			} else {
+				fmt.Printf("Error creating logical replication\n")
+				fmt.Printf("Maybe you forget to turn wal_level = logical in postgres.conf\n")
+				fmt.Printf("Or maybe you forget to install wal2json plugin in postgresql instance?\n")
+
 				panic(errSlot)
 			}
 
+		}
+
+		db, err := pebble.Open("db", &pebble.Options{})
+
+		if err != nil {
+			panic(err)
+		}
+
+		defer db.Close()
+
+		err = db.Set([]byte("connectionUri"), []byte(postgresUri), pebble.Sync)
+
+		if err != nil {
+			panic(err)
 		}
 
 		fmt.Printf("Created logical replication in database with success\n")

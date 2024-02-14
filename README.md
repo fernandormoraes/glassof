@@ -20,3 +20,7 @@ The concept of glassof is to setup PostgreSQL Database for logical replication a
 
 
 *So seat and take a glassof replicated data.*
+
+# Libraries
+
+pgoutput package: https://github.com/kyleconroy/pgoutput

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/jackc/pgx"
 	"github.com/spf13/cobra"
 )
 
@@ -154,6 +155,36 @@ func addTable(args []string) {
 	if errorInsert := db.Set([]byte("tables"), []byte(args[1]+";"+resTables), pebble.Sync); errorInsert != nil {
 		log.Println("Error inserting in tables.")
 		log.Fatal(errorInsert)
+	}
+
+	postgresUri, closer, err := db.Get([]byte("connectionUri"))
+
+	if err == nil {
+		if err := closer.Close(); err != nil {
+			log.Println("Error closing closer")
+			log.Fatal(err)
+		}
+	}
+
+	configPgx, err := pgx.ParseConnectionString(string(postgresUri[:]))
+
+	if err != nil {
+		fmt.Printf("Error parsing connection URI\n")
+		panic(err)
+	}
+
+	conn, err := pgx.Connect(configPgx)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	_, err = conn.Exec("ALTER TABLE " + args[1] + " REPLICA IDENTITY FULL;")
+
+	if err != nil {
+		panic(err)
 	}
 
 	fmt.Printf("Added a glass of table %s.\n", args[1])
