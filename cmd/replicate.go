@@ -5,13 +5,11 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/fernandormoraes/glassof/entities"
+	"github.com/fernandormoraes/glassof/pgoutput"
 	"github.com/jackc/pgx"
 	"github.com/spf13/cobra"
 )
@@ -22,17 +20,13 @@ var replicateCmd = &cobra.Command{
 	Short: "Replicate changed data",
 	Long: `Command takes data from logical slot and insert as a collection in target database.
 	
-	Take a ./glassof replicate [mongo_db_uri] to replicate data to a mongodb target.
+	Take a ./glassof replicate -- to start listening data.
 	`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if args[0] == "" {
 			fmt.Printf("Target database arg is missing.\n")
 			return
 		}
-
-		//tableList := listTables()
-
-		//queriesList := listQueries(tableList)
 
 		dataChanged := getDataPostgre()
 
@@ -53,7 +47,7 @@ func getDataPostgre() []entities.Slot {
 		panic(err)
 	}
 
-	conn, err := pgx.Connect(configPgx)
+	conn, err := pgx.ReplicationConnect(configPgx)
 
 	if err != nil {
 		panic(err)
@@ -69,78 +63,81 @@ func getDataPostgre() []entities.Slot {
 
 	fmt.Printf("Connection succeded\n")
 
-	rows, errSlot := conn.Query("SELECT data FROM pg_logical_slot_get_changes('glassof', NULL, NULL);")
-
-	if errSlot != nil {
-		log.Print(err)
-		log.Printf("Error getting slot changes.")
+	pluginArguments := []string{
+		"proto_version '2'",
+		"publication_names 'pub_glassof'",
+		"messages 'false'",
+		"streaming 'true'",
 	}
 
-	var listRows []entities.Data
-
-	for rows.Next() {
-		var data entities.Data
-
-		rows.Scan(&data.Data)
-
-		listRows = append(listRows, data)
-	}
-
-	slot := rowsToSlotEntity(listRows)
+	err = conn.StartReplication("glassof", 0, -1, pluginArguments...)
 
 	if err != nil {
-		log.Print(err)
+		panic(err)
 	}
 
-	defer rows.Close()
+	ctx := context.Background()
 
-	return slot
-}
+	set := pgoutput.NewRelationSet(nil)
 
-func rowsToSlotEntity(rows []entities.Data) []entities.Slot {
-	var listSlots []entities.Slot
-
-	for _, row := range rows {
-		var slot entities.Slot
-
-		json.Unmarshal([]byte(row.Data), &slot)
-
-		listSlots = append(listSlots, slot)
+	dump := func(relation uint32, row []pgoutput.Tuple) error {
+		values, err := set.Values(relation, row)
+		if err != nil {
+			return fmt.Errorf("error parsing values: %s", err)
+		}
+		for name, value := range values {
+			val := value.Get()
+			log.Printf("%s (%T): %#v", name, val, val)
+		}
+		return nil
 	}
 
-	return listSlots
-}
-
-func listQueries(tableList string) []string {
-
-	tables := strings.Split(tableList, ";")
-
-	db, err := pebble.Open("db", &pebble.Options{})
-
-	if err != nil {
-		log.Println("Error opening database")
-		log.Fatal(err)
+	handler := func(m pgoutput.Message, walPos uint64) error {
+		switch v := m.(type) {
+		case pgoutput.Relation:
+			log.Printf("RELATION")
+			set.Add(v)
+		case pgoutput.Insert:
+			log.Printf("INSERT")
+			return dump(v.RelationID, v.Row)
+		case pgoutput.Update:
+			log.Printf("UPDATE")
+			return dump(v.RelationID, v.Row)
+		case pgoutput.Delete:
+			log.Printf("DELETE")
+			return dump(v.RelationID, v.Row)
+		}
+		return nil
 	}
 
-	defer db.Close()
+	log.Print("Waiting for replication message\n")
 
-	var queries []string
+	for {
 
-	for counter, table := range tables {
-		data, closer, err := db.Get([]byte(fmt.Sprintf("table.%s", table)))
+		msg, err := conn.WaitForReplicationMessage(ctx)
 
 		if err != nil {
-			log.Println("Fail getting queries")
+			panic(err)
 		}
 
-		queries[counter] = string(data[:])
+		log.Print("Reading data\n")
 
-		if err := closer.Close(); err != nil {
-			log.Println("Fail closing queries")
+		if msg.WalMessage != nil {
+			logmsg, err := pgoutput.Parse(msg.WalMessage.WalData)
+
+			if err != nil {
+				panic(err)
+			}
+
+			log.Print("Handling data\n")
+
+			handler(logmsg, msg.WalMessage.WalStart)
+
+			if msg.ServerHeartbeat != nil {
+				log.Printf("Got heartbeat: %s", msg.ServerHeartbeat)
+			}
 		}
 	}
-
-	return queries
 }
 
 func init() {
